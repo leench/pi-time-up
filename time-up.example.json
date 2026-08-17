@@ -1,0 +1,30 @@
+{
+  "timezone": "local",
+  "humanNotification": true,
+  "catchUpOnResume": false,
+  "prompts": {
+    "wrap-up": "The {{label}} soft deadline is {{cutoff}}. Switch to wrap-up mode; do not start new large tasks, steer active subagents to converge, save changes, run essential verification, and prepare a concise handoff.",
+    "force-wrap-up": "Only {{remaining}} remain before the {{label}} cutoff. Force wrap-up now: stop non-essential work, steer active subagents to converge, save changes, and prepare the final handoff.",
+    "resume": "The user cancelled the current Time-up wrap-up for {{label}}. Resume normal task execution and continue the original task if safe."
+  },
+  "schedules": {
+    "work": {
+      "label": "End of work",
+      "time": "18:00",
+      "days": ["mon", "tue", "wed", "thu", "fri"],
+      "userReminderBefore": "30m",
+      "wrapUpBefore": "20m",
+      "forceWrapUpBefore": "5m",
+      "enabled": false
+    },
+    "sleep": {
+      "label": "Bedtime",
+      "time": "00:00",
+      "days": ["sun", "mon", "tue", "wed", "thu", "fri", "sat"],
+      "userReminderBefore": "30m",
+      "wrapUpBefore": "20m",
+      "forceWrapUpBefore": "5m",
+      "enabled": true
+    }
+  }
+}

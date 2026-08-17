@@ -1,0 +1,51 @@
+{
+  "name": "pi-time-up",
+  "version": "0.1.0",
+  "description": "Soft time limits for pi: remind the user and steer the agent into wrap-up mode",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "deadline",
+    "reminder",
+    "wrap-up"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leench/pi-time-up.git"
+  },
+  "bugs": {
+    "url": "https://github.com/leench/pi-time-up/issues"
+  },
+  "homepage": "https://github.com/leench/pi-time-up#readme",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "index.ts",
+    "time-up.ts",
+    "README.md",
+    "RELEASING.md",
+    "LICENSE",
+    "time-up.example.json"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --no-warnings test.ts",
+    "check": "tsc --noEmit --allowImportingTsExtensions --module nodenext --moduleResolution nodenext --target es2022 --strict --skipLibCheck index.ts time-up.ts test.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
