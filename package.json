@@ -26,6 +26,7 @@
     "index.ts",
     "time-up.ts",
     "README.md",
+    "README.zh-CN.md",
     "RELEASING.md",
     "LICENSE",
     "time-up.example.json"
