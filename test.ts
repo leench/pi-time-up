@@ -1,5 +1,6 @@
 import {
 	emptyConfig,
+	getActiveStage,
 	getEventsBetween,
 	getNextOccurrence,
 	markSkipNext,
@@ -49,6 +50,10 @@ const next = getNextOccurrence(schedule, monday);
 check("finds next weekday occurrence", next.cutoff.getDay(), 1);
 const stagedEvents = getEventsBetween(schedule, new Date(2026, 2, 23, 17, 0), next.cutoff);
 check("finds three staged events before cutoff", stagedEvents.map((event) => event.stage), ["user-reminder", "wrap-up", "force-wrap-up"]);
+check("detects the active wrap-up phase", getActiveStage(schedule, new Date(2026, 2, 23, 17, 50))?.stage, "wrap-up");
+check("detects the active force-wrap-up phase", getActiveStage(schedule, new Date(2026, 2, 23, 17, 56))?.stage, "force-wrap-up");
+check("does not activate before wrap-up", getActiveStage(schedule, new Date(2026, 2, 23, 17, 30)), undefined);
+check("does not activate a cancelled occurrence", getActiveStage({ ...schedule, cancelledOccurrence: "2026-03-23@18:00" }, new Date(2026, 2, 23, 17, 50)), undefined);
 const skipped = markSkipNext(schedule, new Date(2026, 2, 23, 17, 0));
 check("skip-next targets the current complete occurrence", [skipped.skipNext, skipped.skipNextOccurrence], [true, "2026-03-23@18:00"]);
 

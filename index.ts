@@ -6,6 +6,7 @@ import {
 	emptyConfig,
 	formatLocalDate,
 	formatRemaining,
+	getActiveStageForConfig,
 	getCurrentOrNextOccurrence,
 	getEventsBetween,
 	getNextEvent,
@@ -66,6 +67,19 @@ function promptFor(event: ReminderEvent, config: TimeUpConfig): string {
 	return renderPrompt(template, event);
 }
 
+function stageMessage(event: ReminderEvent, config: TimeUpConfig) {
+	return {
+		customType: CUSTOM_MESSAGE_TYPE,
+		content: promptFor(event, config),
+		display: true,
+		details: { scheduleId: event.schedule.id, occurrence: event.occurrence.id, warning: event.warning, stage: event.stage },
+	};
+}
+
+function sendStagePrompt(pi: ExtensionAPI, event: ReminderEvent, config: TimeUpConfig): void {
+	pi.sendMessage(stageMessage(event, config), { triggerTurn: true, deliverAs: "steer" });
+}
+
 class Scheduler {
 	private timer: ReturnType<typeof setTimeout> | undefined;
 	private startedAt = new Date();
@@ -77,6 +91,7 @@ class Scheduler {
 		private config: TimeUpConfig,
 		private readonly ctx: ExtensionContext,
 		private readonly persist: Persist,
+		private readonly hasActiveWork: () => boolean,
 	) {}
 
 	start(): void {
@@ -156,17 +171,10 @@ class Scheduler {
 			return;
 		}
 
+		if (!this.hasActiveWork()) return;
 		schedule.activeOccurrence = occurrenceId;
 		await this.persist();
-		this.pi.sendMessage(
-			{
-				customType: CUSTOM_MESSAGE_TYPE,
-				content: promptFor(event, this.config),
-				display: true,
-				details: { scheduleId: schedule.id, occurrence: occurrenceId, warning: event.warning, stage: event.stage },
-			},
-			{ triggerTurn: true, deliverAs: "steer" },
-		);
+		sendStagePrompt(this.pi, event, this.config);
 	}
 
 	private async clearCompletedSkips(now: Date): Promise<void> {
@@ -237,6 +245,11 @@ export default function timeUpExtension(pi: ExtensionAPI): void {
 	let scheduler: Scheduler | undefined;
 	const path = configPath();
 
+	const activeSubagents = new Set<string>();
+	let rootContext: ExtensionContext | undefined;
+	let suppressNextPhaseInjection = 0;
+	const hasActiveWork = (): boolean => Boolean(rootContext && !rootContext.isIdle()) || activeSubagents.size > 0;
+
 	const load = async (ctx: ExtensionContext): Promise<boolean> => {
 		try {
 			config = await readConfig(path);
@@ -259,22 +272,67 @@ export default function timeUpExtension(pi: ExtensionAPI): void {
 	};
 	const ensureLoaded = async (ctx: ExtensionContext): Promise<boolean> => loaded || load(ctx);
 	const restart = (ctx: ExtensionContext): void => {
+		if (!ctx.hasUI) return;
 		if (scheduler) scheduler.update(config);
-		else if (loaded) scheduler = new Scheduler(pi, config, ctx, () => save(ctx).then(() => undefined));
+		else if (loaded) scheduler = new Scheduler(pi, config, ctx, () => save(ctx).then(() => undefined), hasActiveWork);
 		if (scheduler) scheduler.start();
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (await load(ctx)) {
-			scheduler?.stop();
-			scheduler = new Scheduler(pi, config, ctx, () => save(ctx).then(() => undefined));
-			scheduler.start();
-			ctx.ui.setStatus("time-up", Object.keys(config.schedules).length ? "time-up active" : undefined);
-		}
+		if (!(await load(ctx))) return;
+		if (!ctx.hasUI) return;
+		rootContext = ctx;
+		scheduler?.stop();
+		scheduler = new Scheduler(pi, config, ctx, () => save(ctx).then(() => undefined), hasActiveWork);
+		scheduler.start();
+		ctx.ui.setStatus("time-up", Object.keys(config.schedules).length ? "time-up active" : undefined);
 	});
 	pi.on("session_shutdown", () => {
 		scheduler?.stop();
 		scheduler = undefined;
+		rootContext = undefined;
+		activeSubagents.clear();
+	});
+
+	// Inject the active phase into every new main-agent task. Child sessions
+	// receive the same hook, so a newly started subagent gets the constraint
+	// directly even when the parent has no public steer RPC.
+	pi.on("before_agent_start", async (_event, ctx) => {
+		if (!(await ensureLoaded(ctx))) return;
+		const event = getActiveStageForConfig(config);
+		if (!event) return;
+		if (ctx.hasUI && suppressNextPhaseInjection > 0) {
+			suppressNextPhaseInjection -= 1;
+			return;
+		}
+		if (ctx.hasUI && event.schedule.activeOccurrence !== event.occurrence.id) {
+			event.schedule.activeOccurrence = event.occurrence.id;
+			await save(ctx);
+		}
+		return { message: stageMessage(event, config) };
+	});
+
+	// The root session uses this event to re-notify the main agent when a new
+	// child starts during an active phase; the main agent then calls its normal
+	// steer_subagent tool. Child sessions also receive the phase via the hook
+	// above, so this is a supervisor fallback rather than an internal patch.
+	pi.events.on("subagents:started", async (event: unknown) => {
+		const id = typeof event === "object" && event && "id" in event ? String((event as { id: unknown }).id) : undefined;
+		if (id) activeSubagents.add(id);
+		const ctx = rootContext;
+		if (!ctx || !(await ensureLoaded(ctx))) return;
+		const stage = getActiveStageForConfig(config);
+		if (!stage) return;
+		stage.schedule.activeOccurrence = stage.occurrence.id;
+		await save(ctx);
+		suppressNextPhaseInjection += 1;
+		sendStagePrompt(pi, stage, config);
+	});
+	pi.events.on("subagents:completed", (event: unknown) => {
+		if (typeof event === "object" && event && "id" in event) activeSubagents.delete(String((event as { id: unknown }).id));
+	});
+	pi.events.on("subagents:failed", (event: unknown) => {
+		if (typeof event === "object" && event && "id" in event) activeSubagents.delete(String((event as { id: unknown }).id));
 	});
 
 	pi.registerCommand("time-up", {

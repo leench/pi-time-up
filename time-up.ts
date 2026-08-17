@@ -225,6 +225,34 @@ export function getNextEvent(schedule: Schedule, from = new Date()): ReminderEve
 	return events.find((event) => event.at > from);
 }
 
+/** Return the current wrap-up phase, if this schedule is inside one. */
+export function getActiveStage(schedule: Schedule, at = new Date()): ReminderEvent | undefined {
+	const occurrence = getCurrentOrNextOccurrence(schedule, at);
+	if (occurrence.cutoff <= at) return undefined;
+	if (schedule.skipNext && (!schedule.skipNextOccurrence || schedule.skipNextOccurrence === occurrence.id)) return undefined;
+	if (schedule.cancelledOccurrence === occurrence.id) return undefined;
+	const stages: Array<[ReminderStage, string]> = [
+		["force-wrap-up", schedule.forceWrapUpBefore],
+		["wrap-up", schedule.wrapUpBefore],
+	];
+	for (const [stage, warning] of stages) {
+		const warningMinutes = parseWarning(warning);
+		const stageStart = new Date(occurrence.cutoff.getTime() - warningMinutes * 60_000);
+		if (at >= stageStart && at < occurrence.cutoff) {
+			return { schedule, occurrence, stage, warning, warningMinutes, at: stageStart };
+		}
+	}
+	return undefined;
+}
+
+export function getActiveStageForConfig(config: TimeUpConfig, at = new Date()): ReminderEvent | undefined {
+	return Object.values(config.schedules)
+		.filter((schedule) => schedule.enabled)
+		.map((schedule) => getActiveStage(schedule, at))
+		.filter((event): event is ReminderEvent => Boolean(event))
+		.sort((a, b) => a.occurrence.cutoff.getTime() - b.occurrence.cutoff.getTime())[0];
+}
+
 export function formatRemaining(milliseconds: number): string {
 	if (milliseconds <= 0) return "deadline reached";
 	const totalMinutes = Math.ceil(milliseconds / 60_000);
