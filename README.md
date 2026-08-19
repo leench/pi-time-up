@@ -12,7 +12,7 @@ Each enabled schedule follows a three-stage flow:
 2. **20 minutes before the cutoff**: send a `wrap-up` steer message to the main agent.
 3. **5 minutes before the cutoff**: send a stronger `force-wrap-up` steer message.
 
-The main agent can use the existing `steer_subagent` tool to ask running subagents to finish their current tool call and converge. These are soft deadlines: `pi-time-up` never hard-kills a tool, shell command, or process.
+The main agent can first use `subagent({ action: "status" })` to inspect running children, then use `subagent({ action: "steer", id: "<run-id>", message: "Finish the current tool call, then converge." })` to ask each child to converge. These are soft deadlines: `pi-time-up` never hard-kills a tool, shell command, or process.
 
 ## Install
 
@@ -116,7 +116,7 @@ Unknown placeholders are left unchanged.
 
 - Pi must be running for timers and agent steering to work.
 - System sleep and event-loop blockage can cause small delays.
-- Subagents are steered indirectly through the main agent; `pi-time-up` does not modify `@tintinweb/pi-subagents` or provide an external subagent RPC.
+- Subagents are steered indirectly through the main agent; `pi-time-up` does not modify `pi-subagents` or provide an external subagent RPC.
 - The extension does not hard-stop shell commands or other processes.
 
 ## Development

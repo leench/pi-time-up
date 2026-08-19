@@ -10,7 +10,7 @@
 2. **截止前 20 分钟**：向主 Agent 发送 `wrap-up` steer 提示词。
 3. **截止前 5 分钟**：发送更强的 `force-wrap-up` steer 提示词。
 
-主 Agent 可以使用现有的 `steer_subagent` 工具，要求正在运行的子代理完成当前工具调用后收敛。这些都是软截止时间：`pi-time-up` 不会强制杀死工具、shell 命令或进程。
+主 Agent 可以先用 `subagent({ action: "status" })` 查看运行中的子代理，再用 `subagent({ action: "steer", id: "<run-id>", message: "Finish the current tool call, then converge." })` 要求子代理收敛。这些都是软截止时间：`pi-time-up` 不会强制杀死工具、shell 命令或进程。
 
 ## 安装
 
@@ -114,7 +114,7 @@ ${PI_CODING_AGENT_DIR:-~/.pi/agent}/time-up.json
 
 - Pi 必须保持运行，定时器和 Agent steer 才能工作。
 - 系统睡眠或事件循环阻塞可能造成轻微延迟。
-- 子代理通过主 Agent 间接接收收敛指令；`pi-time-up` 不修改 `@tintinweb/pi-subagents`，也不提供外部 subagent RPC。
+- 子代理通过主 Agent 间接接收收敛指令；`pi-time-up` 不修改 `pi-subagents`，也不提供外部 subagent RPC。
 - 扩展不会强制停止 shell 命令或其它进程。
 
 ## 开发

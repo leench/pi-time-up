@@ -27,6 +27,8 @@ import {
 const CONFIG_FILE = "time-up.json";
 const MAX_TIMER_MS = 60 * 60 * 1000;
 const CUSTOM_MESSAGE_TYPE = "time-up";
+const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
+const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 
 type Persist = () => Promise<void>;
 
@@ -313,10 +315,10 @@ export default function timeUpExtension(pi: ExtensionAPI): void {
 	});
 
 	// The root session uses this event to re-notify the main agent when a new
-	// child starts during an active phase; the main agent then calls its normal
-	// steer_subagent tool. Child sessions also receive the phase via the hook
-	// above, so this is a supervisor fallback rather than an internal patch.
-	pi.events.on("subagents:started", async (event: unknown) => {
+	// child starts during an active phase; the main agent then uses the normal
+	// subagent action: "steer". Child sessions also receive the phase via the
+	// hook above, so this is a supervisor fallback rather than an internal patch.
+	pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, async (event: unknown) => {
 		const id = typeof event === "object" && event && "id" in event ? String((event as { id: unknown }).id) : undefined;
 		if (id) activeSubagents.add(id);
 		const ctx = rootContext;
@@ -328,10 +330,7 @@ export default function timeUpExtension(pi: ExtensionAPI): void {
 		suppressNextPhaseInjection += 1;
 		sendStagePrompt(pi, stage, config);
 	});
-	pi.events.on("subagents:completed", (event: unknown) => {
-		if (typeof event === "object" && event && "id" in event) activeSubagents.delete(String((event as { id: unknown }).id));
-	});
-	pi.events.on("subagents:failed", (event: unknown) => {
+	pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (event: unknown) => {
 		if (typeof event === "object" && event && "id" in event) activeSubagents.delete(String((event as { id: unknown }).id));
 	});
 
