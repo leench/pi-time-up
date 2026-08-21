@@ -10,6 +10,8 @@
 2. **截止前 20 分钟**：向主 Agent 发送 `wrap-up` steer 提示词。
 3. **截止前 5 分钟**：发送更强的 `force-wrap-up` steer 提示词。
 
+阶段提醒不会因为主 Agent 当前处于 idle 而被抑制，例如主 Agent 正在等待后台子代理时也会发送。如果 Agent 正在执行工具，Pi 会将 steer 排到当前工具调用之后；阶段进入队列时扩展也会显示可见的 UI 警告。
+
 主 Agent 可以先用 `subagent({ action: "status" })` 查看运行中的子代理，再用 `subagent({ action: "steer", id: "<run-id>", message: "Finish the current tool call, then converge." })` 要求子代理收敛。这些都是软截止时间：`pi-time-up` 不会强制杀死工具、shell 命令或进程。
 
 ## 安装
@@ -113,6 +115,7 @@ ${PI_CODING_AGENT_DIR:-~/.pi/agent}/time-up.json
 ## 边界
 
 - Pi 必须保持运行，定时器和 Agent steer 才能工作。
+- 阶段提醒不会仅因主 Agent 处于 idle 而被抑制，但 Pi 进程必须仍在运行并能够发送消息。
 - 系统睡眠或事件循环阻塞可能造成轻微延迟。
 - 子代理通过主 Agent 间接接收收敛指令；`pi-time-up` 不修改 `pi-subagents`，也不提供外部 subagent RPC。
 - 扩展不会强制停止 shell 命令或其它进程。

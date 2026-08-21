@@ -1,3 +1,4 @@
+import { Scheduler } from "./index.ts";
 import {
 	emptyConfig,
 	getActiveStage,
@@ -76,6 +77,34 @@ const customConfig = normalizeConfig({ schedules: {}, prompts: { nudge: "Custom 
 check("normalizes global prompt overrides", [customConfig.prompts.nudge, customConfig.prompts["force-wrap-up"], customConfig.prompts.resume], ["Custom {{label}}", "Force {{remaining}}", "Resume {{label}}"]);
 const empty = emptyConfig();
 check("new config has no schedules", Object.keys(empty.schedules), []);
+
+const schedulerConfig = normalizeConfig({
+	timezone: "local",
+	schedules: { custom },
+	humanNotification: true,
+	catchUpOnResume: false,
+	prompts: {},
+});
+const schedulerEvent = getEventsBetween(custom, new Date(2026, 2, 23, 17, 40), new Date(2026, 2, 23, 18, 0))[0];
+const sentMessages: unknown[] = [];
+const notices: string[] = [];
+const scheduler = new Scheduler(
+	{
+		sendMessage: (...args: unknown[]) => {
+			sentMessages.push(args);
+			return Promise.resolve();
+		},
+	} as never,
+	schedulerConfig,
+	{
+		ui: { notify: (message: string) => notices.push(message) },
+	} as never,
+	async () => undefined,
+);
+await (scheduler as unknown as { fire: (event: typeof schedulerEvent) => Promise<void> }).fire(schedulerEvent);
+await Promise.resolve();
+check("delivers wrap-up while the root Agent is idle", sentMessages.length, 1);
+check("shows a visible stage notification", notices.length, 1);
 
 if (failures.length) {
 	console.error("\nFAILED:\n" + failures.join("\n"));

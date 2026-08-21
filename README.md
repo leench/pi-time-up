@@ -12,6 +12,8 @@ Each enabled schedule follows a three-stage flow:
 2. **20 minutes before the cutoff**: send a `wrap-up` steer message to the main agent.
 3. **5 minutes before the cutoff**: send a stronger `force-wrap-up` steer message.
 
+The agent stages are dispatched even when the root Agent is idle (for example, waiting for background subagents). If an Agent turn is already active, Pi queues the steer behind the current tool call; the extension also shows a visible UI warning when the stage is queued.
+
 The main agent can first use `subagent({ action: "status" })` to inspect running children, then use `subagent({ action: "steer", id: "<run-id>", message: "Finish the current tool call, then converge." })` to ask each child to converge. These are soft deadlines: `pi-time-up` never hard-kills a tool, shell command, or process.
 
 ## Install
@@ -115,6 +117,7 @@ Unknown placeholders are left unchanged.
 ## Boundaries
 
 - Pi must be running for timers and agent steering to work.
+- Stage reminders are not suppressed just because the root Agent is idle; the process must still be alive and able to deliver messages.
 - System sleep and event-loop blockage can cause small delays.
 - Subagents are steered indirectly through the main agent; `pi-time-up` does not modify `pi-subagents` or provide an external subagent RPC.
 - The extension does not hard-stop shell commands or other processes.

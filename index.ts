@@ -26,9 +26,9 @@ import {
 
 const CONFIG_FILE = "time-up.json";
 const MAX_TIMER_MS = 60 * 60 * 1000;
+const DELIVERY_RETRY_MS = 60 * 1000;
 const CUSTOM_MESSAGE_TYPE = "time-up";
 const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
-const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 
 type Persist = () => Promise<void>;
 
@@ -78,23 +78,32 @@ function stageMessage(event: ReminderEvent, config: TimeUpConfig) {
 	};
 }
 
-function sendStagePrompt(pi: ExtensionAPI, event: ReminderEvent, config: TimeUpConfig): void {
-	pi.sendMessage(stageMessage(event, config), { triggerTurn: true, deliverAs: "steer" });
+function sendStagePrompt(pi: ExtensionAPI, event: ReminderEvent, config: TimeUpConfig): Promise<void> {
+	return Promise.resolve().then(() => pi.sendMessage(stageMessage(event, config), { triggerTurn: true, deliverAs: "steer" }));
 }
 
-class Scheduler {
+function stageNotice(event: ReminderEvent): string {
+	const stage = event.stage === "force-wrap-up" ? "force wrap-up" : "wrap-up";
+	return `${event.schedule.label}: ${stage} reminder queued for the main Agent; deadline in ${formatRemaining(event.occurrence.cutoff.getTime() - Date.now())}.`;
+}
+
+export class Scheduler {
 	private timer: ReturnType<typeof setTimeout> | undefined;
+	private retryTimer: ReturnType<typeof setTimeout> | undefined;
 	private startedAt = new Date();
 	private readonly fired = new Set<string>();
 	private running = false;
+	private readonly pi: ExtensionAPI;
+	private config: TimeUpConfig;
+	private readonly ctx: ExtensionContext;
+	private readonly persist: Persist;
 
-	constructor(
-		private readonly pi: ExtensionAPI,
-		private config: TimeUpConfig,
-		private readonly ctx: ExtensionContext,
-		private readonly persist: Persist,
-		private readonly hasActiveWork: () => boolean,
-	) {}
+	constructor(pi: ExtensionAPI, config: TimeUpConfig, ctx: ExtensionContext, persist: Persist) {
+		this.pi = pi;
+		this.config = config;
+		this.ctx = ctx;
+		this.persist = persist;
+	}
 
 	start(): void {
 		this.stop();
@@ -106,7 +115,17 @@ class Scheduler {
 	stop(): void {
 		this.running = false;
 		if (this.timer !== undefined) clearTimeout(this.timer);
+		if (this.retryTimer !== undefined) clearTimeout(this.retryTimer);
 		this.timer = undefined;
+		this.retryTimer = undefined;
+	}
+
+	private scheduleRetry(): void {
+		if (!this.running || this.retryTimer !== undefined) return;
+		this.retryTimer = setTimeout(() => {
+			this.retryTimer = undefined;
+			void this.tick(false);
+		}, DELIVERY_RETRY_MS);
 	}
 
 	update(config: TimeUpConfig): void {
@@ -157,11 +176,13 @@ class Scheduler {
 	private async fire(event: ReminderEvent): Promise<void> {
 		const key = `${event.schedule.id}:${event.occurrence.id}:${event.stage}`;
 		if (this.fired.has(key)) return;
-		this.fired.add(key);
 		const schedule = event.schedule;
 		const occurrenceId = event.occurrence.id;
 		const skipped = schedule.skipNext === true && (schedule.skipNextOccurrence === occurrenceId || !schedule.skipNextOccurrence);
-		if (skipped || schedule.cancelledOccurrence === occurrenceId) return;
+		if (skipped || schedule.cancelledOccurrence === occurrenceId) {
+			this.fired.add(key);
+			return;
+		}
 
 		if (event.stage === "user-reminder") {
 			if (this.config.humanNotification) {
@@ -170,13 +191,32 @@ class Scheduler {
 					"warning",
 				);
 			}
+			this.fired.add(key);
 			return;
 		}
 
-		if (!this.hasActiveWork()) return;
+		// Stage reminders must not depend on the root Agent's current idle state.
+		// An idle root may still be waiting for background subagents, and steer
+		// delivery itself already knows how to queue behind an active turn.
 		schedule.activeOccurrence = occurrenceId;
-		await this.persist();
-		sendStagePrompt(this.pi, event, this.config);
+		try {
+			await this.persist();
+		} catch (error) {
+			notifyError(this.ctx, `Could not persist ${event.stage} reminder`, error);
+			this.scheduleRetry();
+			return;
+		}
+
+		// Mark the event only after persistence succeeds. The actual send is
+		// intentionally fire-and-forget so a long Agent turn cannot stop the
+		// scheduler; failures clear the key and schedule a retry.
+		this.fired.add(key);
+		this.ctx.ui.notify(stageNotice(event), "warning");
+		void sendStagePrompt(this.pi, event, this.config).catch((error) => {
+			this.fired.delete(key);
+			notifyError(this.ctx, `Could not deliver ${event.stage} reminder; will retry`, error);
+			this.scheduleRetry();
+		});
 	}
 
 	private async clearCompletedSkips(now: Date): Promise<void> {
@@ -247,10 +287,8 @@ export default function timeUpExtension(pi: ExtensionAPI): void {
 	let scheduler: Scheduler | undefined;
 	const path = configPath();
 
-	const activeSubagents = new Set<string>();
 	let rootContext: ExtensionContext | undefined;
 	let suppressNextPhaseInjection = 0;
-	const hasActiveWork = (): boolean => Boolean(rootContext && !rootContext.isIdle()) || activeSubagents.size > 0;
 
 	const load = async (ctx: ExtensionContext): Promise<boolean> => {
 		try {
@@ -276,7 +314,7 @@ export default function timeUpExtension(pi: ExtensionAPI): void {
 	const restart = (ctx: ExtensionContext): void => {
 		if (!ctx.hasUI) return;
 		if (scheduler) scheduler.update(config);
-		else if (loaded) scheduler = new Scheduler(pi, config, ctx, () => save(ctx).then(() => undefined), hasActiveWork);
+		else if (loaded) scheduler = new Scheduler(pi, config, ctx, () => save(ctx).then(() => undefined));
 		if (scheduler) scheduler.start();
 	};
 
@@ -285,7 +323,7 @@ export default function timeUpExtension(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return;
 		rootContext = ctx;
 		scheduler?.stop();
-		scheduler = new Scheduler(pi, config, ctx, () => save(ctx).then(() => undefined), hasActiveWork);
+		scheduler = new Scheduler(pi, config, ctx, () => save(ctx).then(() => undefined));
 		scheduler.start();
 		ctx.ui.setStatus("time-up", Object.keys(config.schedules).length ? "time-up active" : undefined);
 	});
@@ -293,7 +331,6 @@ export default function timeUpExtension(pi: ExtensionAPI): void {
 		scheduler?.stop();
 		scheduler = undefined;
 		rootContext = undefined;
-		activeSubagents.clear();
 	});
 
 	// Inject the active phase into every new main-agent task. Child sessions
@@ -314,13 +351,9 @@ export default function timeUpExtension(pi: ExtensionAPI): void {
 		return { message: stageMessage(event, config) };
 	});
 
-	// The root session uses this event to re-notify the main agent when a new
-	// child starts during an active phase; the main agent then uses the normal
-	// subagent action: "steer". Child sessions also receive the phase via the
-	// hook above, so this is a supervisor fallback rather than an internal patch.
-	pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, async (event: unknown) => {
-		const id = typeof event === "object" && event && "id" in event ? String((event as { id: unknown }).id) : undefined;
-		if (id) activeSubagents.add(id);
+	// Re-notify the main agent when a new child starts during an active phase.
+	// Child sessions also receive the phase through the hook above.
+	pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, async (_event: unknown) => {
 		const ctx = rootContext;
 		if (!ctx || !(await ensureLoaded(ctx))) return;
 		const stage = getActiveStageForConfig(config);
@@ -328,10 +361,7 @@ export default function timeUpExtension(pi: ExtensionAPI): void {
 		stage.schedule.activeOccurrence = stage.occurrence.id;
 		await save(ctx);
 		suppressNextPhaseInjection += 1;
-		sendStagePrompt(pi, stage, config);
-	});
-	pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (event: unknown) => {
-		if (typeof event === "object" && event && "id" in event) activeSubagents.delete(String((event as { id: unknown }).id));
+		void sendStagePrompt(pi, stage, config).catch((error) => notifyError(ctx, `Could not deliver ${stage.stage} reminder`, error));
 	});
 
 	pi.registerCommand("time-up", {
