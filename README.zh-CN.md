@@ -10,7 +10,7 @@
 2. **截止前 20 分钟**：向主 Agent 发送 `wrap-up` steer 提示词。
 3. **截止前 5 分钟**：发送更强的 `force-wrap-up` steer 提示词。
 
-阶段提醒不会因为主 Agent 当前处于 idle 而被抑制，例如主 Agent 正在等待后台子代理时也会发送。如果 Agent 正在执行工具，Pi 会将 steer 排到当前工具调用之后；阶段进入队列时扩展也会显示可见的 UI 警告。
+阶段提醒只在确实有工作需要收敛时发送：主 Agent 正在执行，或本会话还有运行中的后台子代理（通过 pi-subagents 的进程内 RPC 查询）。如果主 Agent 空闲且没有任何后台运行，扩展会跳过发给主 Agent 的提醒，只在 UI 中留一条说明，避免为无事可做而启动一轮检查。后台状态无法确认时（未安装 pi-subagents 或查询超时）按“有工作”处理，保持原有提醒。如果 Agent 正在执行工具，Pi 会将 steer 排到当前工具调用之后；阶段进入队列时扩展也会显示可见的 UI 警告。
 
 主 Agent 可以先用 `subagent({ action: "status" })` 查看运行中的子代理，再用 `subagent({ action: "steer", id: "<run-id>", message: "Finish the current tool call, then converge." })` 要求子代理收敛。这些都是软截止时间：`pi-time-up` 不会强制杀死工具、shell 命令或进程。
 
@@ -47,6 +47,7 @@ ${PI_CODING_AGENT_DIR:-~/.pi/agent}/time-up.json
   "timezone": "local",
   "humanNotification": true,
   "catchUpOnResume": false,
+  "requireActiveWork": true,
   "prompts": {},
   "schedules": {
     "sleep": {
@@ -69,6 +70,7 @@ ${PI_CODING_AGENT_DIR:-~/.pi/agent}/time-up.json
 - `wrapUpBefore` 最少为 `20m`。
 - 提前时间支持 `m`、`h`、`d`，最长 7 天。
 - `catchUpOnResume` 默认为 `false`，Pi 启动时不会补发错过的提醒。
+- `requireActiveWork` 默认为 `true`：只有主 Agent 正在执行，或本会话存在运行中的后台子代理时，才发送 wrap-up / force-wrap-up 阶段；空闲且无后台运行时跳过发给主 Agent 的提醒。设为 `false` 恢复为无条件发送。
 - 配置无效时只在 UI 中提示错误，不会导致 Pi 崩溃。
 
 ## 命令
@@ -115,7 +117,7 @@ ${PI_CODING_AGENT_DIR:-~/.pi/agent}/time-up.json
 ## 边界
 
 - Pi 必须保持运行，定时器和 Agent steer 才能工作。
-- 阶段提醒不会仅因主 Agent 处于 idle 而被抑制，但 Pi 进程必须仍在运行并能够发送消息。
+- 阶段提醒只在主 Agent 正在执行或存在运行中的后台子代理时发送（可用 `requireActiveWork: false` 恢复无条件发送）；Pi 进程必须仍在运行并能够发送消息。
 - 系统睡眠或事件循环阻塞可能造成轻微延迟。
 - 子代理通过主 Agent 间接接收收敛指令；`pi-time-up` 不修改 `pi-subagents`，也不提供外部 subagent RPC。
 - 扩展不会强制停止 shell 命令或其它进程。

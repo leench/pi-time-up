@@ -1,5 +1,6 @@
 import { Scheduler } from "./index.ts";
 import {
+	activeRunsFromStatusReply,
 	emptyConfig,
 	getActiveStage,
 	getEventsBetween,
@@ -10,6 +11,7 @@ import {
 	parseTime,
 	parseWarning,
 	renderPrompt,
+	shouldDeliverAgentStage,
 } from "./time-up.ts";
 
 const failures: string[] = [];
@@ -86,25 +88,75 @@ const schedulerConfig = normalizeConfig({
 	prompts: {},
 });
 const schedulerEvent = getEventsBetween(custom, new Date(2026, 2, 23, 17, 40), new Date(2026, 2, 23, 18, 0))[0];
-const sentMessages: unknown[] = [];
-const notices: string[] = [];
-const scheduler = new Scheduler(
-	{
-		sendMessage: (...args: unknown[]) => {
-			sentMessages.push(args);
-			return Promise.resolve();
-		},
-	} as never,
-	schedulerConfig,
-	{
-		ui: { notify: (message: string) => notices.push(message) },
-	} as never,
-	async () => undefined,
+
+check("keeps the agent stage while the root is busy", shouldDeliverAgentStage(true, undefined), true);
+check("keeps the agent stage when background state is unknown", shouldDeliverAgentStage(false, undefined), true);
+check("delivers the agent stage with active background runs", shouldDeliverAgentStage(false, 2), true);
+check("skips the agent stage when idle without background runs", shouldDeliverAgentStage(false, 0), false);
+check(
+	"reads active runs from asyncSnapshot",
+	activeRunsFromStatusReply({ data: { asyncSnapshot: { runs: [{ id: "a" }, { id: "b" }] } } }),
+	2,
 );
-await (scheduler as unknown as { fire: (event: typeof schedulerEvent) => Promise<void> }).fire(schedulerEvent);
-await Promise.resolve();
-check("delivers wrap-up while the root Agent is idle", sentMessages.length, 1);
-check("shows a visible stage notification", notices.length, 1);
+check("falls back to fleet.totalActive", activeRunsFromStatusReply({ data: { fleet: { totalActive: 3 } } }), 3);
+check("reports unknown background state for unusable replies", activeRunsFromStatusReply({ data: {} }), undefined);
+
+function mockEventBus(reply: unknown): { on: (channel: string, handler: (data: unknown) => void) => () => void; emit: (channel: string, data: unknown) => void } {
+	const listeners = new Map<string, Set<(data: unknown) => void>>();
+	return {
+		on(channel, handler) {
+			const handlers = listeners.get(channel) ?? new Set();
+			handlers.add(handler);
+			listeners.set(channel, handlers);
+			return () => handlers.delete(handler);
+		},
+		emit(channel, data) {
+			if (channel !== "subagents:rpc:v1:request" || reply === undefined) return;
+			const requestId = (data as { requestId?: string }).requestId;
+			for (const handler of listeners.get(`subagents:rpc:v1:reply:${requestId}`) ?? []) handler(reply);
+		},
+	};
+}
+
+async function fireStage(options: { idle: boolean; reply?: unknown; requireActiveWork?: boolean }): Promise<{ sent: number; notices: string[] }> {
+	const sent: unknown[] = [];
+	const notices: string[] = [];
+	const config = options.requireActiveWork === undefined
+		? schedulerConfig
+		: normalizeConfig({ schedules: { custom }, requireActiveWork: options.requireActiveWork });
+	const scheduler = new Scheduler(
+		{
+			sendMessage: (...args: unknown[]) => {
+				sent.push(args);
+				return Promise.resolve();
+			},
+			events: mockEventBus(options.reply),
+		} as never,
+		config,
+		{
+			isIdle: () => options.idle,
+			ui: { notify: (message: string, type?: string) => notices.push(`${type ?? "info"}:${message}`) },
+		} as never,
+		async () => undefined,
+	);
+	await (scheduler as unknown as { fire: (event: typeof schedulerEvent) => Promise<void> }).fire(schedulerEvent);
+	await Promise.resolve();
+	return { sent: sent.length, notices };
+}
+
+const busy = await fireStage({ idle: false, reply: undefined });
+check("delivers wrap-up while the root Agent is busy", busy.sent, 1);
+check("shows a visible stage notification", busy.notices.length, 1);
+
+const waiting = await fireStage({ idle: true, reply: { data: { fleet: { totalActive: 1 } } } });
+check("delivers wrap-up while background runs are active", waiting.sent, 1);
+
+const idle = await fireStage({ idle: true, reply: { data: { fleet: { totalActive: 0 } } } });
+check("skips wrap-up when idle without background runs", idle.sent, 0);
+check("explains the skipped stage", idle.notices.length, 1);
+
+const legacy = await fireStage({ idle: true, reply: undefined, requireActiveWork: false });
+check("restores unconditional delivery with requireActiveWork=false", legacy.sent, 1);
 
 if (failures.length) {
 	console.error("\nFAILED:\n" + failures.join("\n"));

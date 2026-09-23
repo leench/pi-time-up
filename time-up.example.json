@@ -2,6 +2,7 @@
   "timezone": "local",
   "humanNotification": true,
   "catchUpOnResume": false,
+  "requireActiveWork": true,
   "prompts": {
     "wrap-up": "The {{label}} soft deadline is {{cutoff}}. Switch to wrap-up mode; do not start new large tasks, steer active subagents to converge, save changes, run essential verification, and prepare a concise handoff.",
     "force-wrap-up": "Only {{remaining}} remain before the {{label}} cutoff. Force wrap-up now: stop non-essential work, steer active subagents to converge, save changes, and prepare the final handoff.",

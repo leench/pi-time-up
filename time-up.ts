@@ -36,6 +36,8 @@ export interface TimeUpConfig {
 	schedules: Record<string, Schedule>;
 	humanNotification: boolean;
 	catchUpOnResume: boolean;
+	/** Deliver agent stages only when the root Agent is busy or background runs are active. Defaults to true. */
+	requireActiveWork: boolean;
 	prompts: PromptTemplates;
 }
 
@@ -157,6 +159,7 @@ export function normalizeConfig(value: unknown): TimeUpConfig {
 		schedules,
 		humanNotification: raw.humanNotification !== false,
 		catchUpOnResume: raw.catchUpOnResume === true,
+		requireActiveWork: raw.requireActiveWork !== false,
 		prompts,
 	};
 }
@@ -167,6 +170,7 @@ export function emptyConfig(): TimeUpConfig {
 		schedules: {},
 		humanNotification: true,
 		catchUpOnResume: false,
+		requireActiveWork: true,
 		prompts: {},
 	};
 }
@@ -279,4 +283,34 @@ export function renderPrompt(template: string, event: ReminderEvent, now = new D
 		warningMinutes: String(event.warningMinutes),
 		stage: event.stage,
 	});
+}
+
+/**
+ * Decide whether an agent stage should be delivered.
+ *
+ * An idle root Agent does not mean there is nothing left to wrap up: it may be
+ * waiting for background subagents. Skip the stage only when the root is idle
+ * and we positively know that no background run is active. Unknown background
+ * state keeps the reminder (fail open).
+ */
+export function shouldDeliverAgentStage(rootBusy: boolean, activeRuns: number | undefined): boolean {
+	if (rootBusy) return true;
+	if (activeRuns === undefined) return true;
+	return activeRuns > 0;
+}
+
+/** Read the active background-run count from a pi-subagents `status` RPC reply. */
+export function activeRunsFromStatusReply(reply: unknown): number | undefined {
+	if (!reply || typeof reply !== "object") return undefined;
+	const data = (reply as { data?: unknown }).data;
+	if (!data || typeof data !== "object") return undefined;
+	const snapshot = (data as { asyncSnapshot?: unknown }).asyncSnapshot;
+	if (snapshot && typeof snapshot === "object" && Array.isArray((snapshot as { runs?: unknown }).runs)) {
+		return (snapshot as { runs: unknown[] }).runs.length;
+	}
+	const fleet = (data as { fleet?: unknown }).fleet;
+	if (fleet && typeof fleet === "object" && typeof (fleet as { totalActive?: unknown }).totalActive === "number") {
+		return (fleet as { totalActive: number }).totalActive;
+	}
+	return undefined;
 }

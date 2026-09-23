@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promises as fs } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+	activeRunsFromStatusReply,
 	emptyConfig,
 	formatLocalDate,
 	formatRemaining,
@@ -18,6 +20,7 @@ import {
 	markSkipNext,
 	renderPrompt,
 	renderTemplate,
+	shouldDeliverAgentStage,
 	type PromptAction,
 	type ReminderEvent,
 	type Schedule,
@@ -29,6 +32,9 @@ const MAX_TIMER_MS = 60 * 60 * 1000;
 const DELIVERY_RETRY_MS = 60 * 1000;
 const CUSTOM_MESSAGE_TYPE = "time-up";
 const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
+const SUBAGENT_RPC_REQUEST_EVENT = "subagents:rpc:v1:request";
+const SUBAGENT_RPC_REPLY_EVENT_PREFIX = "subagents:rpc:v1:reply:";
+const SUBAGENT_STATUS_TIMEOUT_MS = 1500;
 
 type Persist = () => Promise<void>;
 
@@ -85,6 +91,33 @@ function sendStagePrompt(pi: ExtensionAPI, event: ReminderEvent, config: TimeUpC
 function stageNotice(event: ReminderEvent): string {
 	const stage = event.stage === "force-wrap-up" ? "force wrap-up" : "wrap-up";
 	return `${event.schedule.label}: ${stage} reminder queued for the main Agent; deadline in ${formatRemaining(event.occurrence.cutoff.getTime() - Date.now())}.`;
+}
+
+/**
+ * Ask pi-subagents for the current background-run count through its public
+ * in-process RPC. Resolves to `undefined` when the package is absent, does not
+ * answer in time, or returns an unusable payload; callers treat that as
+ * unknown and keep the reminder (fail open).
+ */
+async function queryActiveBackgroundRuns(pi: ExtensionAPI): Promise<number | undefined> {
+	return await new Promise<number | undefined>((resolve) => {
+		const requestId = randomUUID();
+		let settled = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let unsubscribe: (() => void) | undefined;
+		const finish = (value: number | undefined): void => {
+			if (settled) return;
+			settled = true;
+			if (timer !== undefined) clearTimeout(timer);
+			unsubscribe?.();
+			resolve(value);
+		};
+		unsubscribe = pi.events.on(`${SUBAGENT_RPC_REPLY_EVENT_PREFIX}${requestId}`, (reply) => {
+			finish(activeRunsFromStatusReply(reply));
+		});
+		timer = setTimeout(() => finish(undefined), SUBAGENT_STATUS_TIMEOUT_MS);
+		pi.events.emit(SUBAGENT_RPC_REQUEST_EVENT, { version: 1, requestId, method: "status", params: {} });
+	});
 }
 
 export class Scheduler {
@@ -195,9 +228,24 @@ export class Scheduler {
 			return;
 		}
 
-		// Stage reminders must not depend on the root Agent's current idle state.
-		// An idle root may still be waiting for background subagents, and steer
-		// delivery itself already knows how to queue behind an active turn.
+		// An idle root is not the same as "nothing left to wrap up": it may be
+		// waiting for background subagents. Skip the stage only when the root is
+		// idle and the pi-subagents RPC positively reports zero active runs.
+		// Unknown background state keeps the reminder, and steer delivery itself
+		// already knows how to queue behind an active turn.
+		if (this.config.requireActiveWork) {
+			const rootBusy = !this.ctx.isIdle();
+			const activeRuns = rootBusy ? undefined : await queryActiveBackgroundRuns(this.pi);
+			if (!shouldDeliverAgentStage(rootBusy, activeRuns)) {
+				this.fired.add(key);
+				this.ctx.ui.notify(
+					`${schedule.label}: no active work in this session; skipped the main-Agent ${event.stage} reminder.`,
+					"info",
+				);
+				return;
+			}
+		}
+
 		schedule.activeOccurrence = occurrenceId;
 		try {
 			await this.persist();
